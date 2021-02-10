@@ -1,0 +1,35 @@
+{
+  "name": "mongodb-populate-refs",
+  "version": "0.2.3",
+  "description": "Tiny utility function that populates given data's DBRefs with native MongoDB driver",
+  "keywords": ["mongo", "mongodb", "populate", "DBRefs"],
+  "author": "Lchemist",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Lchemist/mongodb-populate-refs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lchemist/mongodb-populate-refs.git"
+  },
+  "files": [
+    "lib"
+  ],
+  "main": "lib/index.js",
+  "scripts": {
+    "prebuild": "rimraf tsconfig.tsbuildinfo lib",
+    "build": "tsc -b"
+  },
+  "engines": {
+    "node": ">=8",
+    "npm": ">=5"
+  },
+  "peerDependencies": {
+    "mongodb": ">=3"
+  },
+  "devDependencies": {
+    "@types/mongodb": "^3.6.6",
+    "@types/node": "^14.14.22",
+    "mongodb": "^3.6.4",
+    "rimraf": "^3.0.2",
+    "typescript": "^4.0.5"
+  }
+}
