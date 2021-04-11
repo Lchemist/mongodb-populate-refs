@@ -1,6 +1,6 @@
 {
   "name": "mongodb-populate-refs",
-  "version": "0.2.3",
+  "version": "1.0.0",
   "description": "Tiny utility tool that populates given data's DBRefs with native MongoDB driver",
   "keywords": [
     "MongoDB",
