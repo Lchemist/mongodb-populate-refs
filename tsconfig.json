@@ -19,8 +19,8 @@
     "skipLibCheck": true,
     "sourceMap": false,
     "strict": true,
-    "target": "es5"
+    "target": "ES5"
   },
   "include": ["src/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "src/**/*.test.ts"]
 }

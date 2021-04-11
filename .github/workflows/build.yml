@@ -1,0 +1,68 @@
+name: build
+on:
+  push:
+    branches:
+      - main
+      - next
+  pull_request:
+jobs:
+  build:
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
+    strategy:
+      fail-fast: true
+      matrix:
+        os:
+          - 'ubuntu-latest'
+          - 'macos-latest'
+          - 'windows-latest'
+        node:
+          - '14'
+          - '12'
+          - '10'
+        include:
+          - os: 'ubuntu-latest'
+            node: '14'
+            ENABLE_CODECOV: true
+            ENABLE_SEMREL: true
+    name: ${{ matrix.os }} ‣ Node.js ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    env:
+      ENABLE_CODECOV: ${{ matrix.ENABLE_CODECOV }}
+      ENABLE_SEMREL: ${{ matrix.ENABLE_SEMREL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Cache dependencies
+        id: cache-deps
+        uses: actions/cache@v2
+        with:
+          path: node_modules
+          key: ${{ matrix.os }}-node_${{ matrix.node }}-node_modules-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: npm ci --ignore-scripts
+      - name: Test
+        run: npm run test
+        env:
+          MONGO_USER: ${{ secrets.MONGO_USER }}
+          MONGO_PASS: ${{ secrets.MONGO_PASS }}
+          MONGO_HOST: ${{ secrets.MONGO_HOST }}
+          MONGO_DB: mongodb-populate-refs
+      - name: Report coverage
+        if: matrix.ENABLE_CODECOV
+        uses: codecov/codecov-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+      - name: Build
+        run: npm run build
+      - name: Release
+        if: matrix.ENABLE_SEMREL
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

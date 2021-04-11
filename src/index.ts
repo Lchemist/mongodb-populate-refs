@@ -15,32 +15,82 @@ limitations under the License.
 */
 
 import type { MongoClient, Db } from 'mongodb'
-import { ObjectId } from 'mongodb'
+import { ObjectId, DBRef as DBRefClass } from 'mongodb'
 
-type Object = Record<string, unknown>
-type DBRefObject = {
-  _bsontype: 'DBRef'
-  namespace: string
-  oid: string
-  db?: string
+/**
+ * Data type of the MongoDB document's _id field.
+ * @note Although technically any data type other than Array
+ * can be used for _id field, the unlikely ones are omitted from this type.
+ **/
+type MongoId = ObjectId | number | string
+
+/**
+ * @note Order of the properties matters,
+ * see: https://docs.mongodb.com/manual/reference/database-references/#format
+ **/
+export type RawDBRef = {
+  $ref: string
+  $id: MongoId
+  $db?: string
 }
 
-const isObject = (obj: unknown): obj is Object => typeof obj === 'object' && obj !== null && !Array.isArray(obj) && !(obj instanceof Date)
-const isDBRef = (obj: Object): obj is DBRefObject => obj._bsontype === 'DBRef'
+/**
+ * @note This type is more accurate than the native `DBRef` class from `mongodb` package
+ * @note Order of the properties matters,
+ * see: https://docs.mongodb.com/manual/reference/database-references/#format
+ **/
+export type DBRef = {
+  _bsontype: 'DBRef'
+  namespace: string
+  oid: MongoId
+  db: string | undefined
+}
 
-const gatherRefs = (data: unknown, defaultDb: string) => {
-  const refs: Record<string, Record<string, Set<string>>> = Object.create(null)
+type Dict<V extends unknown> = Record<string, V>
+type PlainObject = Dict<unknown>
+
+const isPlainObject = (obj: unknown): obj is PlainObject =>
+  Object.prototype.toString.call(obj) === '[object Object]'
+const isDBRef = (obj: PlainObject): obj is DBRef =>
+  Object.getPrototypeOf(obj) === DBRefClass.prototype
+const isRawDBRef = (obj: PlainObject): obj is RawDBRef => {
+  const keys = Reflect.ownKeys(obj).join(',')
+  if (keys === '$ref,$id' || keys === '$ref,$id,$db') return true
+  return false
+}
+const isObjectId = (obj: unknown): obj is ObjectId => obj instanceof ObjectId
+const isSameId = (id1: MongoId, id2: MongoId): boolean =>
+  isObjectId(id1) ? isObjectId(id2) && id1.equals(id2) : id1 === id2
+
+/** @returns [$ref, $id, $db] */
+const getDBRefProps = (o: RawDBRef | DBRef): [string, MongoId, string | undefined] => [
+  (<RawDBRef>o).$ref ?? (<DBRef>o).namespace,
+  (<RawDBRef>o).$id ?? (<DBRef>o).oid,
+  (<RawDBRef>o).$db ?? (<DBRef>o).db,
+]
+
+/** @polyfill */
+const fromEntries = <T extends unknown>(entries: [string, T][]): Dict<T> => {
+  const o = Object.create(null)
+  for (const [k, v] of entries) {
+    o[k] = v
+  }
+  return o
+}
+
+const gatherRefs = <T extends unknown>(data: T, defaultDb: string) => {
+  const refs: Dict<Dict<Set<MongoId>>> = Object.create(null)
   const process = (data: unknown) => {
     if (Array.isArray(data)) {
       data.forEach(e => process(e))
-    } else if (isObject(data)) {
-      if (!('_bsontype' in data)) {
+    } else if (isPlainObject(data)) {
+      if (isRawDBRef(data) || isDBRef(data)) {
+        const [$ref, $id, $db = defaultDb] = getDBRefProps(data)
+        if (!refs[$db]) refs[$db] = Object.create(null)
+        if (!refs[$db][$ref]) refs[$db][$ref] = new Set()
+        refs[$db][$ref].add($id)
+      } else {
         Object.values(data).forEach(v => process(v))
-      } else if (isDBRef(data)) {
-        const db = data?.db || defaultDb
-        if (!refs[db]) refs[db] = Object.create(null)
-        if (!refs[db][data.namespace]) refs[db][data.namespace] = new Set()
-        refs[db][data.namespace].add(String(data.oid))
       }
     }
   }
@@ -48,63 +98,95 @@ const gatherRefs = (data: unknown, defaultDb: string) => {
   return refs
 }
 
-const populateRefs = (data: unknown, refData: Record<string, Record<string, Object[]>>, defaultDb: string, keys?: string[]): unknown => {
+const populateRefs = <T extends unknown>(
+  data: T,
+  refData: Dict<Dict<PlainObject[]>>,
+  defaultDb: string,
+  keys?: string[]
+): T => {
   const populate = (data: unknown): unknown => {
     if (Array.isArray(data)) return data.map(d => populate(d))
-    if (!isObject(data)) return data
-    if (data === null) return data
-    if (isDBRef(data)) {
-      const populatedData = refData[data?.db || defaultDb][data.namespace].find(d => String(d._id) === String(data.oid))
-      if (populatedData && Array.isArray(keys)) return Object.fromEntries(Object.entries(populatedData).filter(([k]) => keys.includes(k)))
+    if (!isPlainObject(data)) return data
+    if (isRawDBRef(data) || isDBRef(data)) {
+      const [$ref, $id, $db = defaultDb] = getDBRefProps(data)
+      const populatedData = refData[$db][$ref].find(d => isSameId(<MongoId>d._id, $id))
+      if (populatedData && Array.isArray(keys))
+        return fromEntries(Object.entries(populatedData).filter(([k]) => keys.includes(k)))
       else return populatedData
     }
     if ('_bsontype' in data) return data
-    const temp: Object = {}
+    const temp: PlainObject = {}
     for (const [k, v] of Object.entries(data)) {
       temp[k] = populate(v)
     }
     return temp
   }
 
-  return populate(data)
+  return populate(data) as T
 }
 
-export const populateFromClient = async (client: MongoClient, defaultDb: string, baseData: unknown, keys?: string[]) => {
+export const populateFromClient = async <T extends unknown>(
+  client: MongoClient,
+  defaultDb: string,
+  baseData: T,
+  keys?: string[]
+): Promise<T> => {
   if (!client.isConnected()) await client.connect()
 
   const refEntries = Object.entries(gatherRefs(baseData, defaultDb))
   if (refEntries.length === 0) return baseData
-  const newRefEntries = []
+  const newRefEntries: [string, Dict<PlainObject[]>][] = []
   for (const [db, collectionMap] of refEntries) {
-    const collectionMapEntries: [string, unknown[]][] = []
+    const collectionMapEntries: [string, PlainObject[]][] = []
     for (const [collection, ids] of Object.entries(collectionMap)) {
-      collectionMapEntries.push([collection, await client.db(db).collection(collection).find({ _id: { $in: [...ids].map(id => new ObjectId(id)) } }).toArray()])  
+      collectionMapEntries.push([
+        collection,
+        await client
+          .db(db)
+          .collection(collection)
+          .find({ _id: { $in: [...ids].map(id => new ObjectId(id)) } })
+          .toArray(),
+      ])
     }
-    newRefEntries.push([db, Object.fromEntries(collectionMapEntries)])
+    newRefEntries.push([db, fromEntries(collectionMapEntries)])
   }
-  
-  return populateRefs(baseData, Object.fromEntries(newRefEntries), defaultDb, keys)
+
+  return populateRefs(baseData, fromEntries(newRefEntries), defaultDb, keys)
 }
 
-export const populateFromDb = async (db: Db, baseData: unknown, keys?: string[]) => {
+export const populateFromDb = async <T extends unknown>(
+  db: Db,
+  baseData: T,
+  keys?: string[]
+): Promise<T> => {
   const dbName = db.databaseName
   const refEntries = Object.entries(gatherRefs(baseData, dbName)[dbName] ?? {})
   if (refEntries.length === 0) return baseData
-  const newRefEntries = []
+  const newRefEntries: [string, PlainObject[]][] = []
   for (const [collection, ids] of refEntries) {
-    newRefEntries.push([collection, await db.collection(collection).find({ _id: { $in: [...ids].map(id => new ObjectId(id)) } }).toArray()])
+    newRefEntries.push([
+      collection,
+      await db
+        .collection(collection)
+        .find({ _id: { $in: [...ids].map(id => new ObjectId(id)) } })
+        .toArray(),
+    ])
   }
-  return populateRefs(baseData, { [dbName]: Object.fromEntries(newRefEntries) }, dbName, keys)
+  return populateRefs(baseData, { [dbName]: fromEntries(newRefEntries) }, dbName, keys)
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
 export const fromClient = (client: MongoClient) => ({
   defaultDb: (db: string) => ({
-    populate: (data: unknown, keys?: string[]) => populateFromClient(client, db, data, keys)
-  })
+    populate: <T extends unknown>(data: T, keys?: string[]): Promise<T> =>
+      populateFromClient(client, db, data, keys),
+  }),
 })
 
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
 export const fromDb = (db: Db) => ({
-  populate: (data: unknown, keys?: string[]) => populateFromDb(db, data, keys)
+  populate: <T extends unknown>(data: T, keys?: string[]): Promise<T> =>
+    populateFromDb(db, data, keys),
 })
 
 export default populateFromClient

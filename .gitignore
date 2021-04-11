@@ -1,5 +1,8 @@
-node_modules
-lib
+.vscode
 archive
+coverage
+lib
+node_modules
 .DS_Store
+.env
 *.tsbuildinfo

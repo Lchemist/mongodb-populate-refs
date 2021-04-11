@@ -1,0 +1,4 @@
+{
+  "path": "cz-cc",
+  "questions": ["type", "subject", "breaking"]
+}
